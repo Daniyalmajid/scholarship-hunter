@@ -5,8 +5,7 @@ from pathlib import Path
 import feedparser
 import requests
 from bs4 import BeautifulSoup
-from google import genai
-from google.genai import types
+
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -15,6 +14,32 @@ DB_FILE = DATA_DIR / "scholarships.json"
 SEEN_FILE = DATA_DIR / "seen.json"
 PROFILE = json.loads((ROOT / "profile.json").read_text(encoding="utf-8"))
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "openai/gpt-oss-20b"
+
+
+def call_groq(prompt: str, system_prompt: str = "You return clean structured scholarship data.") -> str:
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY is missing.")
+    response = requests.post(
+        GROQ_URL,
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"].strip()
 # Add more RSS URLs here (e.g. a DAAD feed if you find a working one).
 FEEDS = [
     "https://www.scholars4dev.com/feed/",
@@ -106,13 +131,20 @@ def build_prompt(entry, text):
     )
 
 
-def evaluate(client, entry):
+def evaluate(entry):
     prompt = build_prompt(entry, page_text(entry["link"]))
-    cfg = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.4)
     for attempt in range(2):
         try:
-            resp = client.models.generate_content(model=MODEL, contents=prompt, config=cfg)
-            data = json.loads(resp.text)
+            raw = call_groq(
+                prompt,
+                system_prompt="You are a strict scholarship eligibility evaluator. Respond with valid JSON only.",
+            )
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned.rsplit("```", 1)[0]
+            data = json.loads(cleaned.strip())
             if isinstance(data, list):
                 data = data[0]
             return data
@@ -121,8 +153,9 @@ def evaluate(client, entry):
         except Exception as ex:
             if "429" in str(ex) or "RESOURCE_EXHAUSTED" in str(ex):
                 raise
-            print(f"[warn] gemini error: {ex}")
+            print(f"[warn] groq error: {ex}")
             time.sleep(3)
+    return None
     return None
 
 
@@ -134,11 +167,6 @@ def still_open(item):
 
 
 def main():
-    key = os.getenv("GEMINI_API_KEY")
-    if not key:
-        sys.exit("GEMINI_API_KEY is not set.")
-    client = genai.Client(api_key=key)
-
     db = load_json(DB_FILE, [])
     seen = set(load_json(SEEN_FILE, []))
     seen.update(item.get("source_link", "") for item in db)
@@ -150,7 +178,7 @@ def main():
     for n, entry in enumerate(new_entries, 1):
         print(f"[{n}/{len(new_entries)}] {entry['title'][:80]}")
         try:
-            res = evaluate(client, entry)
+            res = evaluate( entry)
         except Exception:
             print("[warn] rate limit reached; stopping. Remaining entries will be retried next run.")
             break
