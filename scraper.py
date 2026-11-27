@@ -26,7 +26,7 @@ FEEDS = [
 PER_FEED = 25
 MAX_NEW = int(os.getenv("MAX_NEW_PER_RUN", "12"))   # keeps within Gemini free-tier limits
 SLEEP_BETWEEN_CALLS = 7                              # seconds (free tier ~10 requests/min)
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.8-flash"
 UA = {"User-Agent": "Mozilla/5.0 (ScholarshipHunter/1.0)"}
 TODAY = dt.date.today()
 
